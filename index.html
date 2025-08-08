@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Globe 3D - คลิกดูประชากรประเทศ</title>
+  <style>
+    /* หน้าเต็ม ไม่มี margin */
+    html, body { height: 100%; margin: 0; font-family: "Segoe UI", Tahoma, sans-serif; }
+    #globeViz { width: 100vw; height: 100vh; display: block; }
+
+    /* กล่องข้อมูลบนหน้า (มุมซ้ายบน) */
+    #infoBox {
+      position: absolute;
+      left: 12px;
+      top: 12px;
+      background: rgba(0,0,0,0.65);
+      color: #fff;
+      padding: 12px;
+      border-radius: 8px;
+      min-width: 200px;
+      max-width: 320px;
+      line-height: 1.4;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+    }
+
+    #infoBox img.flag { display:block; margin-top:8px; max-width:100%; height:auto; border-radius:4px; }
+
+    /* ข้อความแนะนำเล็ก ๆ มุมขวาล่าง */
+    #hint {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      background: rgba(255,255,255,0.9);
+      color: #111;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div id="globeViz"></div>
+
+  <div id="infoBox">
+    <b>คลิกประเทศบนลูกโลก</b><br>
+    จะแสดงชื่อประเทศและประชากรปัจจุบัน
+  </div>
+
+  <div id="hint">ลากเพื่อหมุน, เลื่อนล้อเมาส์เพื่อซูม</div>
+
+  <!-- ไลบรารีที่ต้องใช้ (จาก CDN) -->
+  <script src="https://unpkg.com/globe.gl"></script>
+  <script src="https://unpkg.com/topojson@3"></script>
+
+  <script>
+  // อ้างอิงกล่องข้อมูล
+  const infoBox = document.getElementById('infoBox');
+
+  // สร้าง Globe (Globe.gl) ใน element #globeViz
+  const world = Globe()(document.getElementById('globeViz'))
+    .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')    // พื้นผิวโลก
+    .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')        // ก้อนภูมิประเทศ (bump)
+    .backgroundImageUrl('https://unpkg.com/three-globe/example/img/night-sky.png')       // ฉากหลัง
+    .polygonsTransitionDuration(300);
+
+  // โหลดขอบเขตประเทศ (TopoJSON) จาก world-atlas
+ fetch('https://unpkg.com/world-atlas@2/countries-110m.json')
+    .then(r => r.json())
+    .then(topology => {
+      // แปลงจาก TopoJSON -> GeoJSON features
+      const countries = topojson.feature(topology, topology.objects.countries).features;
+
+      // ต่อเข้า Globe และตั้งค่าสี/ขอบ/เหตุการณ์คลิก
+      world.polygonsData(countries)
+        .polygonCapColor(() => 'rgba(200, 0, 0, 0.25)')
+        .polygonSideColor(() => 'rgba(0, 100, 0, 0.06)')
+        .polygonStrokeColor(() => '#111')
+        .onPolygonClick(showCountry)
+        .onPolygonHover(d => {
+          // แสดงชื่อชั่วคราวเมื่อเอาเมาส์ชี้ (ถ้ามี)
+          if (d && (d.properties && (d.properties.name || d.properties.ADMIN))) {
+            infoBox.innerHTML = `<b>${d.properties.name || d.properties.ADMIN}</b><br>คลิกเพื่อดูข้อมูลประชากร`;
+          } else {
+            infoBox.innerHTML = `<b>คลิกประเทศบนลูกโลก</b><br>จะแสดงชื่อประเทศและประชากรปัจจุบัน`;
+          }
+        });
+    })
+    .catch(err => {
+      infoBox.innerHTML = 'ไม่สามารถโหลดข้อมูลขอบเขตประเทศได้';
+      console.error(err);
+    });
+
+  // ฟังก์ชันเมื่อคลิกประเทศ
+  async function showCountry(feature) {
+    // feature = GeoJSON feature ของประเทศที่คลิก
+    const props = feature.properties || {};
+    // พยายามหา "ชื่อประเทศ" จากฟิลด์ที่ต่างกัน (data source อาจเก็บไม่เหมือนกัน)
+    const nameGuess = props.name || props.ADMIN || props.NAME || props.name_long || feature.id || 'Unknown';
+
+    // อัปเดตกล่องข้อมูลขณะกำลังโหลด
+    infoBox.innerHTML = `<b>${nameGuess}</b><br>กำลังโหลดข้อมูลประชากร...`;
+
+    // ฟังก์ชันช่วยเรียก REST Countries API (พยายามหลายวิธี)
+    async function fetchCountryByName(name) {
+      // พยายามแบบ fullText ก่อน (ตรงชื่อเต็ม) -> ถ้าไม่เจอให้ลองแบบไม่ระบุ fullText
+      const enc = encodeURIComponent(name);
+      try {
+        let r = await fetch(`https://restcountries.com/v3.1/name/${enc}?fullText=true`);
+        let data = await r.json();
+        if (!Array.isArray(data) || data.status === 404) {
+          r = await fetch(`https://restcountries.com/v3.1/name/${enc}`);
+          data = await r.json();
+        }
+        if (Array.isArray(data)) return data[0];
+      } catch (e) { /* ignore, จะคืน undefined */ }
+      return undefined;
+    }
+
+    // ถ้ามีโค้ดประเทศ (เช่น ISO) ใน properties ให้ลองใช้ alpha code ด้วย
+    async function fetchCountryByAlpha(alpha) {
+      if (!alpha) return undefined;
+      try {
+        const r = await fetch(`https://restcountries.com/v3.1/alpha/${encodeURIComponent(alpha)}`);
+        const data = await r.json();
+        if (Array.isArray(data)) return data[0];
+        // restcountries อาจคืน object ถ้า alpha ถูกต้อง:
+        if (data && (data.name || data.population)) return data;
+      } catch (e) { /* ignore */ }
+      return undefined;
+    }
+
+    // พยายามดึงข้อมูล
+    let countryData = undefined;
+
+    // ถ้ามี property ที่เป็น ISO code ให้ลอง (ตัวอย่าง: ISO_A3)
+    const possiblyAlpha3 = props.iso_a3 || props.ISO_A3 || props.ADM0_A3 || props.iso3 || props.iso_a3_eh;
+    if (possiblyAlpha3) {
+      countryData = await fetchCountryByAlpha(possiblyAlpha3);
+    }
+
+    // ถ้ายังไม่เจอ ให้หาโดยชื่อ
+    if (!countryData) countryData = await fetchCountryByName(nameGuess);
+
+    // ถ้ายังไม่เจอเลย แสดงข้อความผิดพลาด
+    if (!countryData) {
+      infoBox.innerHTML = `<b>${nameGuess}</b><br>ไม่พบข้อมูลประชากรจาก API`;
+      return;
+    }
+
+    // ดึงค่าที่ต้องการจากผลลัพธ์ (ระวังฟิลด์หลายรูปแบบ)
+    const commonName = countryData.name?.common || countryData.name?.official || nameGuess;
+    const population = countryData.population ? countryData.population.toLocaleString() : 'ไม่ทราบ';
+    const capital = Array.isArray(countryData.capital) ? countryData.capital[0] : (countryData.capital || '-');
+    const region = countryData.region || '-';
+    const flagUrl = countryData.flags?.png || countryData.flags?.svg || '';
+
+    // อัปเดตกล่องข้อมูลให้สวย
+    infoBox.innerHTML = `<b>${commonName}</b><br>
+                         ประชากร: <b>${population}</b> คน<br>
+                         ภูมิภาค: ${region}<br>
+                         เมืองหลวง: ${capital}
+                         ${flagUrl ? `<img class="flag" src="${flagUrl}" alt="ธงของ ${commonName}">` : ''}`;
+  }
+  </script>
+</body>
+</html>
